@@ -1,0 +1,8 @@
+name: docking_env
+channels:
+  - conda-forge
+dependencies:
+  - openbabel
+  - vina
+  - wget
+  - python=3.8

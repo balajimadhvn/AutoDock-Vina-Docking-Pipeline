@@ -1,0 +1,6 @@
+pdb_id: 1abc
+pubchem_ids:
+12345
+67890
+11223
+

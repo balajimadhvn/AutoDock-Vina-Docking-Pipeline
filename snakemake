@@ -1,0 +1,135 @@
+# Snakefile
+
+import os
+import csv
+
+# Read the PDB ID and PubChem CIDs from input_ids.txt
+with open("input_ids.txt") as f:
+    lines = f.readlines()
+
+# Extract the PDB ID and PubChem IDs
+pdb_id = lines[0].strip().split(":")[1].strip()  # Extract the PDB ID
+pubchem_ids = [line.strip().split(":")[1].strip() for line in lines[1:]]  # Extract the PubChem CIDs
+
+# URL for fetching receptor and ligands
+PDB_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
+PUBCHEM_URL = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{pubchem_id}/sdf"
+
+# Rule to fetch the receptor (PDB) from the PDB database
+rule fetch_receptor:
+    input:
+        pdb_id=pdb_id
+    output:
+        receptor_pdb="receptor/{pdb_id}_receptor.pdb"
+    conda:
+        "docking_env"
+    shell:
+        """
+        echo "Fetching receptor for PDB ID: {input.pdb_id}"
+        wget -O {output.receptor_pdb} {PDB_URL.format(pdb_id=input.pdb_id)}
+        """
+
+# Rule to fetch ligands from PubChem using PubChem CID
+rule fetch_ligand:
+    input:
+        pubchem_id="{pubchem_id}"
+    output:
+        ligand_sdf="ligands/{pubchem_id}_ligand.sdf"
+    conda:
+        "docking_env"
+    shell:
+        """
+        echo "Fetching ligand for PubChem CID: {input.pubchem_id}"
+        wget -O {output.ligand_sdf} {PUBCHEM_URL.format(pubchem_id=input.pubchem_id)}
+        """
+
+# Rule to prepare the receptor (convert to 3D, add charges, convert to PDBQT)
+rule prepare_receptor:
+    input:
+        receptor_pdb="receptor/{pdb_id}_receptor.pdb"
+    output:
+        receptor_pdbqt="receptor/{pdb_id}_receptor.pdbqt"
+    conda:
+        "docking_env"
+    shell:
+        """
+        echo "Preparing receptor: {input.receptor_pdb}"
+        obabel {input.receptor_pdb} -O {output.receptor_pdbqt} --partialcharge gasteiger --3d
+        """
+
+# Rule to prepare the ligands (convert to 3D, add charges, energy minimization, convert to PDBQT)
+rule prepare_ligand:
+    input:
+        ligand_sdf="ligands/{pubchem_id}_ligand.sdf"
+    output:
+        ligand_pdbqt="ligands/{pubchem_id}_ligand.pdbqt"
+    conda:
+        "docking_env"
+    shell:
+        """
+        echo "Preparing ligand: {input.ligand_sdf}"
+        obabel {input.ligand_sdf} -O {output.ligand_pdbqt} --partialcharge gasteiger --minimize --3d
+        """
+
+# Rule to run AutoDock Vina docking
+rule dock_ligand:
+    input:
+        receptor_pdbqt="receptor/{pdb_id}_receptor.pdbqt",
+        ligand_pdbqt="ligands/{pubchem_id}_ligand.pdbqt",
+        vina_conf="vina.conf"
+    output:
+        docked_pdbqt="docked/{pubchem_id}_docked.pdbqt",
+        docking_log="logs/{pubchem_id}_docking.log"
+    conda:
+        "docking_env"
+    shell:
+        """
+        echo "Docking ligand: {input.ligand_pdbqt} with receptor: {input.receptor_pdbqt}"
+        vina --receptor {input.receptor_pdbqt} --ligand {input.ligand_pdbqt} --out {output.docked_pdbqt} --log {output.docking_log} --config {input.vina_conf}
+        """
+
+# Rule to generate the Vina config file
+rule generate_vina_config:
+    input:
+        receptor_pdbqt="receptor/{pdb_id}_receptor.pdbqt"
+    output:
+        vina_conf="vina.conf"
+    conda:
+        "docking_env"
+    shell:
+        """
+        echo "Generating Vina configuration file"
+        echo -e "receptor = {input.receptor_pdbqt}\ncenter_x = 0\ncenter_y = 0\ncenter_z = 0\nsize_x = 20\nsize_y = 20\nsize_z = 20" > {output.vina_conf}
+        """
+
+# Rule to process all PubChem IDs
+rule all:
+    input:
+        expand("docked/{pubchem_id}_docked.pdbqt", pubchem_id=pubchem_ids),
+        "affinities.csv"  # Final output with affinities saved
+
+# Rule to parse docking logs and extract the best score for each ligand
+rule extract_affinities:
+    input:
+        docking_logs=expand("logs/{pubchem_id}_docking.log", pubchem_id=pubchem_ids)
+    output:
+        affinities_csv="affinities.csv"
+    conda:
+        "docking_env"
+    run:
+        affinities = []
+
+        for log_file in input.docking_logs:
+            ligand_name = log_file.split("/")[-1].split("_")[0]  # Get ligand name from log file
+            with open(log_file) as f:
+                for line in f:
+                    if line.startswith("REMARK VINA RESULT:"):
+                        score = float(line.split()[2])  # Extract the best score
+                        affinities.append([ligand_name, score])
+                        break
+
+        # Save affinities to CSV
+        with open(output.affinities_csv, mode="w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Ligand", "Best Score"])
+            writer.writerows(affinities)
