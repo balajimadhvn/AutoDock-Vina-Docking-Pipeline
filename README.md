@@ -15,7 +15,7 @@ This pipeline automates the process of docking ligands with a receptor using Aut
 
    ```bash
    git clone https://github.com/balajimadhvn/AutoDock-Vina-Docking-Pipeline.git
-   cd docking-pipeline
+   cd AutoDock-Vina-Docking-Pipeline
 
     Create the Conda environment:
 
